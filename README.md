@@ -41,3 +41,10 @@ $ sudo insmod ec_su_axb35
 /sys/class/ec_su_axb35/apu/power_mode      (RW) - [quiet, balanced, performance]
 ```
 
+# Python GUI app (needs root to write to /sys/class/ec_su_axb35/*)
+to test:
+python ./ec-su_axb35-linux-gui.py
+
+to install:
+sudo install -m 755 ec-su_axb35-linux-gui.py /usr/local/bin/ec-su_axb35-linux-gui
+cp ec-fan-control.desktop ~/.local/share/applications/
