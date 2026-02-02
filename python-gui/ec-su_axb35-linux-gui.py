@@ -32,11 +32,16 @@ def ensure_root():
 
 ensure_root()
 
+import argparse
+import json
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import threading
 import time
 import os
+
+CONFIG_PATH = "/etc/ec-fan-control.json"
+BASE_PATH = "/sys/class/ec_su_axb35"
 
 class FanControlGUI:
     def __init__(self, root):
@@ -44,7 +49,8 @@ class FanControlGUI:
         self.root.title("Fan Control - ec_su_axb35")
         self.root.geometry("900x800")
         
-        self.base_path = "/sys/class/ec_su_axb35"
+        self.config_path = CONFIG_PATH
+        self.base_path = BASE_PATH
         self.update_interval = 1.0
         self.running = True
         self.mode_check_timer = None
@@ -135,6 +141,22 @@ class FanControlGUI:
         for i, fan_num in enumerate([1, 2, 3], 1):
             fan_name = ["CPU Fan 1", "CPU Fan 2", "System Fan"][i-1]
             self.create_fan_control(fans_frame, fan_num, fan_name, i-1)
+
+        # Config control block
+        config_frame = ttk.Frame(self.root)
+        config_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Button(
+            config_frame,
+            text="Save Config",
+            command=self.save_config
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            config_frame,
+            text="Load Config",
+            command=self.load_config
+        ).pack(side=tk.LEFT, padx=5)
     
     def create_fan_control(self, parent, fan_num, fan_name, column):
         """Create control block for a single fan"""
@@ -355,7 +377,6 @@ class FanControlGUI:
             # Enforce minimum constraint: each level must be >= previous level
             for i in range(index + 1, 5):
                 if values[i] < values[index]:
-                    print(f"L{i}: {values[i]} -> {values[index]}")
                     values[i] = values[index]
                     # Temporarily block the callback to avoid recursion
                     sliders[i].config(command='')
@@ -514,6 +535,76 @@ class FanControlGUI:
                 print(f"Monitor error: {e}")
             
             time.sleep(self.update_interval)
+
+    def save_config(self):
+        data = {
+            "apu_mode": self.apu_mode_var.get(),
+            "fans": {}
+        }
+
+        for fan_num, c in self.fan_controls.items():
+            data["fans"][str(fan_num)] = {
+                "mode": c["mode_var"].get(),
+                "level": c["level_var"].get(),
+                "rampup_curve": c["rampup_values"][:],
+                "rampdown_curve": c["rampdown_values"][:],
+            }
+
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(data, f, indent=2)
+            messagebox.showinfo("Saved", "Configuration saved successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save config:\n{e}")
+
+    def load_config(self):
+        try:
+            with open(self.config_path) as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load config:\n{e}")
+            return
+
+        # APU mode
+        apu = data.get("apu_mode")
+        if apu:
+            self.apu_mode_var.set(apu)
+            self.write_sysfs(f"{self.base_path}/apu/power_mode", apu)
+
+        for fan_num_str, cfg in data.get("fans", {}).items():
+            fan_num = int(fan_num_str)
+            controls = self.fan_controls.get(fan_num)
+            if not controls:
+                continue
+
+            mode = cfg.get("mode")
+            if mode:
+                controls["mode_var"].set(mode)
+                self.write_sysfs(f"{self.base_path}/fan{fan_num}/mode", mode)
+                self.update_fan_mode_ui(fan_num, mode)
+
+            level = cfg.get("level")
+            if level and mode == "fixed":
+                controls["level_var"].set(level)
+                self.write_sysfs(f"{self.base_path}/fan{fan_num}/level", level)
+
+            # Curves
+            if mode == "curve":
+                ru = cfg.get("rampup_curve")
+                rd = cfg.get("rampdown_curve")
+
+                if ru and len(ru) == 5:
+                    controls["rampup_values"][:] = ru
+                    for i, s in enumerate(controls["rampup_sliders"]):
+                        s.set(ru[i])
+                    self.schedule_curve_write(fan_num, "rampup", ru)
+
+                if rd and len(rd) == 5:
+                    controls["rampdown_values"][:] = rd
+                    for i, s in enumerate(controls["rampdown_sliders"]):
+                        s.set(rd[i])
+                    self.schedule_curve_write(fan_num, "rampdown", rd)
+        messagebox.showinfo("Loaded", "Configuration loaded successfully.")
     
     def on_closing(self):
         """Handle window close"""
